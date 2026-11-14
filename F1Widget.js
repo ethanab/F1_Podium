@@ -5,13 +5,14 @@
 /**
  * F1 Podium – widget iPhone pour Scriptable
  * -----------------------------------------
+ *  • Podium illustré : P1 en grand au centre (photo + voiture), P2 et P3
  *  • Top 10 de la dernière course
  *  • Classement constructeurs (points de chaque écurie)
  *  • Date du prochain Grand Prix (+ compte à rebours)
  *
  * Données : API Jolpica F1 (compatible Ergast) – https://api.jolpi.ca
  * Taille conseillée : GRAND widget (toutes les infos).
- *  - Moyen : top 10 + prochain GP
+ *  - Moyen : podium + P4–P10 + prochain GP
  *  - Petit : podium + prochain GP
  */
 
@@ -19,6 +20,27 @@ const API = "https://api.jolpi.ca/ergast/f1";
 const LOCALE = "fr_FR";
 const CACHE_FILE = "f1-podium-cache.json";
 const REFRESH_MINUTES = 60;
+const OPENF1 = "https://api.openf1.org/v1";
+
+// Images des voitures (CDN formula1.com). Slug d'équipe utilisé par le site F1.
+const CAR_SLUGS = {
+  red_bull: "redbullracing",
+  ferrari: "ferrari",
+  mercedes: "mercedes",
+  mclaren: "mclaren",
+  aston_martin: "astonmartin",
+  alpine: "alpine",
+  williams: "williams",
+  rb: "racingbulls",
+  racing_bulls: "racingbulls",
+  sauber: "kicksauber",
+  kick_sauber: "kicksauber",
+  audi: "audi",
+  haas: "haasf1team",
+  cadillac: "cadillac",
+};
+// Pour forcer une image de voiture : { mclaren: "https://…/ma-voiture.png" }
+const CAR_IMAGE_OVERRIDES = {};
 
 // Couleurs des écuries (clé = constructorId de l'API)
 const TEAM_COLORS = {
@@ -108,7 +130,7 @@ async function fetchData() {
     }
   }
 
-  return {
+  const data = {
     fetchedAt: now.toISOString(),
     lastRace: lastRace && {
       name: lastRace.raceName,
@@ -117,6 +139,8 @@ async function fetchData() {
       date: lastRace.date,
       results: lastRace.Results.slice(0, 10).map((r) => ({
         pos: r.position,
+        number: r.number,
+        given: r.Driver.givenName,
         code: r.Driver.code || r.Driver.familyName.slice(0, 3).toUpperCase(),
         name: r.Driver.familyName,
         teamId: r.Constructor.constructorId,
@@ -140,6 +164,23 @@ async function fetchData() {
       sprint: !!nextRace.Sprint,
     },
   };
+  if (data.lastRace) await attachHeadshots(data.lastRace.results);
+  return data;
+}
+
+// Photos des pilotes via OpenF1 (non bloquant si indisponible)
+async function attachHeadshots(results) {
+  try {
+    const req = new Request(`${OPENF1}/drivers?session_key=latest`);
+    req.timeoutInterval = 10;
+    const drivers = await req.loadJSON();
+    if (!Array.isArray(drivers)) return;
+    for (const r of results) {
+      const d = drivers.find((x) => String(x.driver_number) === String(r.number))
+        || drivers.find((x) => x.name_acronym === r.code);
+      if (d && d.headshot_url) r.headshot = d.headshot_url;
+    }
+  } catch (e) {}
 }
 
 // Cache local : le widget reste affiché même sans réseau
@@ -217,6 +258,152 @@ function colorBar(stack, color, h = 10) {
   bar.cornerRadius = 1.5;
 }
 
+// ---------------------------------------------------------------- images
+
+function hash(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+// Télécharge une image (essaie chaque URL dans l'ordre) avec cache disque
+async function loadImage(urls) {
+  const fm = FileManager.local();
+  for (const url of urls.filter(Boolean)) {
+    const p = fm.joinPath(fm.documentsDirectory(), `f1img-${hash(url)}`);
+    try {
+      if (fm.fileExists(p)) {
+        const img = fm.readImage(p);
+        if (img) return img;
+      }
+      const req = new Request(url);
+      req.timeoutInterval = 10;
+      const raw = await req.load();
+      if (req.response && req.response.statusCode >= 400) continue;
+      const img = Image.fromData(raw);
+      if (!img) continue;
+      fm.write(p, raw);
+      return img;
+    } catch (e) {}
+  }
+  return null;
+}
+
+function headshotUrls(url) {
+  if (!url) return [];
+  // Variante haute résolution d'abord, puis l'URL d'origine
+  return [url.replace("/1col/", "/2col/"), url];
+}
+
+function carUrls(teamId, season) {
+  if (CAR_IMAGE_OVERRIDES[teamId]) return [CAR_IMAGE_OVERRIDES[teamId]];
+  const slug = CAR_SLUGS[teamId];
+  if (!slug) return [];
+  const y = Number(season) || new Date().getFullYear();
+  return [y, y - 1].map((yr) =>
+    `https://media.formula1.com/image/upload/c_fit,w_800/f_png/q_auto/v1740000000/common/f1/${yr}/${slug}/${yr}${slug}carright.webp`);
+}
+
+async function loadPodiumImages(lastRace) {
+  if (!lastRace) return null;
+  const top3 = lastRace.results.slice(0, 3);
+  const [car, ...heads] = await Promise.all([
+    loadImage(carUrls(top3[0] && top3[0].teamId, lastRace.season)),
+    ...top3.map((r) => loadImage(headshotUrls(r.headshot))),
+  ]);
+  return { car, heads };
+}
+
+// Dessine le podium : P2 | P1 (grand, voiture derrière) | P3
+function drawPodium(results, imgs) {
+  const W = 320, H = 116;
+  const ctx = new DrawContext();
+  ctx.size = new Size(W, H);
+  ctx.opaque = false;
+  ctx.respectScreenScale = true;
+
+  const slots = [
+    { r: results[1], cx: W / 2 - 108, stepW: 100, stepH: 21, headH: 54, nameFs: 10, medal: C.silver, img: imgs && imgs.heads[1] },
+    { r: results[0], cx: W / 2, stepW: 112, stepH: 30, headH: 74, nameFs: 15, medal: C.gold, img: imgs && imgs.heads[0] },
+    { r: results[2], cx: W / 2 + 108, stepW: 100, stepH: 16, headH: 50, nameFs: 10, medal: C.bronze, img: imgs && imgs.heads[2] },
+  ];
+
+  // 1) Voiture du vainqueur, derrière le P1
+  const p1 = slots[1];
+  const p1StepTop = H - p1.stepH;
+  if (p1.r) {
+    const car = imgs && imgs.car;
+    if (car) {
+      let cw = 250, ch = (cw * car.size.height) / car.size.width;
+      if (ch > 64) { ch = 64; cw = (ch * car.size.width) / car.size.height; }
+      ctx.drawImageInRect(car, new Rect((W - cw) / 2, p1StepTop - ch + 4, cw, ch));
+    } else {
+      // Repli : halo aux couleurs de l'écurie
+      ctx.setFillColor(new Color(TEAM_COLORS[p1.r.teamId] || "#888888", 0.35));
+      ctx.fillEllipse(new Rect(W / 2 - 110, p1StepTop - 50, 220, 56));
+    }
+  }
+
+  for (const s of slots) {
+    if (!s.r) continue;
+    const team = TEAM_COLORS[s.r.teamId] || "#888888";
+    const stepTop = H - s.stepH;
+
+    // 2) Photo du pilote (ou pastille de repli)
+    const headTop = stepTop - s.headH;
+    if (s !== p1) {
+      ctx.setFillColor(new Color(team, 0.3));
+      ctx.fillEllipse(new Rect(s.cx - s.headH * 0.5, headTop + s.headH * 0.12, s.headH, s.headH * 0.88));
+    }
+    if (s.img) {
+      const iw = (s.headH * s.img.size.width) / s.img.size.height;
+      ctx.drawImageInRect(s.img, new Rect(s.cx - iw / 2, headTop, iw, s.headH));
+    } else {
+      const d = s.headH * 0.8;
+      ctx.setFillColor(new Color(team));
+      ctx.fillEllipse(new Rect(s.cx - d / 2, stepTop - d - 2, d, d));
+      ctx.setFont(Font.heavySystemFont(d * 0.32));
+      ctx.setTextColor(Color.white());
+      ctx.setTextAlignedCenter();
+      ctx.drawTextInRect(s.r.code, new Rect(s.cx - d / 2, stepTop - d / 2 - d * 0.22, d, d * 0.5));
+    }
+
+    // 3) Marche du podium aux couleurs de l'écurie + nom
+    ctx.setFillColor(new Color(team, 0.9));
+    ctx.fillRect(new Rect(s.cx - s.stepW / 2, stepTop, s.stepW, s.stepH));
+    ctx.setFillColor(new Color("#000000", 0.25));
+    ctx.fillRect(new Rect(s.cx - s.stepW / 2, stepTop, s.stepW, s.stepH));
+    const name = s.r.name.toUpperCase();
+    const fs = Math.min(s.nameFs, (s.stepW - 8) / (name.length * 0.68));
+    ctx.setFont(Font.heavySystemFont(fs));
+    ctx.setTextColor(Color.white());
+    ctx.setTextAlignedCenter();
+    ctx.drawTextInRect(name, new Rect(s.cx - s.stepW / 2, stepTop + (s.stepH - fs * 1.25) / 2, s.stepW, fs * 1.3));
+
+    // 4) Médaille avec la position
+    const m = s === p1 ? 20 : 16;
+    const mx = s.cx - s.stepW / 2 + 4, my = stepTop - m - 3;
+    ctx.setFillColor(s.medal);
+    ctx.fillEllipse(new Rect(mx, my, m, m));
+    ctx.setFont(Font.heavySystemFont(m * 0.6));
+    ctx.setTextColor(new Color("#15151E"));
+    ctx.drawTextInRect(s.r.pos, new Rect(mx, my + m * 0.14, m, m * 0.8));
+  }
+  return ctx.getImage();
+}
+
+function widgetContentWidth(padding) {
+  const sw = Device.screenSize().width;
+  return Math.min(Math.round(sw * 0.865), 364) - padding;
+}
+
+function addPodium(stack, data, imgs, width) {
+  if (!data.lastRace) return;
+  const img = stack.addImage(drawPodium(data.lastRace.results, imgs));
+  img.imageSize = new Size(width, (width * 116) / 320);
+  img.centerAlignImage();
+}
+
 // ---------------------------------------------------------------- blocs UI
 
 function header(w, data, fs) {
@@ -273,21 +460,21 @@ function constructorRow(col, c, fs) {
 function nextRaceBlock(w, data, fs, compact) {
   const box = w.addStack();
   box.backgroundColor = new Color("#FFFFFF", 0.08);
-  box.cornerRadius = 8;
-  box.setPadding(5, 8, 5, 8);
+  box.cornerRadius = 7;
+  box.setPadding(4, 8, 4, 8);
   box.centerAlignContent();
   const nr = data.nextRace;
   if (!nr) {
     addText(box, "Prochain GP : calendrier indisponible", Font.mediumSystemFont(fs - 1), C.dim);
     return;
   }
-  const left = box.addStack();
-  left.layoutVertically();
-  addText(left, compact ? "PROCHAIN" : "PROCHAIN GRAND PRIX", Font.heavySystemFont(fs - 4), C.red, { scale: false });
-  addText(left, shortRaceName(nr.name) + (nr.sprint && !compact ? " · Sprint" : ""), Font.boldSystemFont(fs), C.text);
-  addText(left, fmtDate(nr.start, compact ? "EEE d MMM HH:mm" : "EEEE d MMMM · HH:mm"), Font.mediumSystemFont(fs - 2), C.dim);
+  addText(box, compact ? "NEXT" : "PROCHAIN GP", Font.heavySystemFont(fs - 3), C.red, { scale: false });
+  box.addSpacer(6);
+  addText(box, shortRaceName(nr.name) + (nr.sprint && !compact ? " · Sprint" : ""), Font.boldSystemFont(fs), C.text);
+  box.addSpacer(6);
+  addText(box, fmtDate(nr.start, compact ? "d MMM HH:mm" : "EEE d MMM · HH:mm"), Font.mediumSystemFont(fs - 2), C.dim);
   box.addSpacer();
-  addText(box, countdown(nr.start), Font.heavyMonospacedSystemFont(fs + 2), C.text, { right: true, scale: false });
+  addText(box, countdown(nr.start), Font.heavyMonospacedSystemFont(fs), C.text, { right: true, scale: false });
 }
 
 function footer(w, offline, fetchedAt) {
@@ -311,12 +498,15 @@ function baseWidget() {
   return w;
 }
 
-function largeWidget(data, offline) {
+function largeWidget(data, imgs, offline) {
   const w = baseWidget();
-  w.setPadding(12, 12, 10, 12);
-  const fs = 12;
-  header(w, data, 14);
-  w.addSpacer(8);
+  const pad = 12;
+  w.setPadding(10, pad, 10, pad);
+  const fs = 10.5;
+  header(w, data, 13);
+  w.addSpacer(4);
+  addPodium(w, data, imgs, widgetContentWidth(pad * 2));
+  w.addSpacer(6);
 
   const cols = w.addStack();
   cols.layoutHorizontally();
@@ -324,64 +514,63 @@ function largeWidget(data, offline) {
 
   const left = cols.addStack();
   left.layoutVertically();
-  left.spacing = 2.5;
-  sectionTitle(left, "Top 10", fs);
-  (data.lastRace ? data.lastRace.results : []).forEach((r) => driverRow(left, r, fs, true));
+  left.spacing = 1.5;
+  sectionTitle(left, "P4 – P10", fs);
+  (data.lastRace ? data.lastRace.results.slice(3, 10) : []).forEach((r) => driverRow(left, r, fs, true));
 
   cols.addSpacer(12);
 
   const right = cols.addStack();
   right.layoutVertically();
-  right.spacing = 2.5;
+  right.spacing = 1.5;
   sectionTitle(right, "Constructeurs", fs);
   data.constructors.slice(0, 11).forEach((c) => constructorRow(right, c, fs));
 
   w.addSpacer();
-  nextRaceBlock(w, data, 13, false);
+  nextRaceBlock(w, data, 11, false);
   footer(w, offline, data.fetchedAt);
   return w;
 }
 
-function mediumWidget(data, offline) {
+function mediumWidget(data, imgs, offline) {
   const w = baseWidget();
-  w.setPadding(10, 12, 8, 12);
-  const fs = 10;
-  header(w, data, 12);
-  w.addSpacer(5);
-  const cols = w.addStack();
-  const results = data.lastRace ? data.lastRace.results : [];
-  [results.slice(0, 5), results.slice(5, 10)].forEach((chunk, i) => {
-    if (i) cols.addSpacer(10);
-    const col = cols.addStack();
-    col.layoutVertically();
-    col.spacing = 1.5;
-    chunk.forEach((r) => driverRow(col, r, fs, false));
-  });
-  w.addSpacer();
-  nextRaceBlock(w, data, 11, true);
-  footer(w, offline, data.fetchedAt);
-  return w;
-}
-
-function smallWidget(data, offline) {
-  const w = baseWidget();
-  w.setPadding(10, 10, 8, 10);
-  const fs = 11;
+  w.setPadding(8, 10, 8, 10);
+  const fs = 9;
+  const row = w.addStack();
+  row.centerAlignContent();
+  const podiumW = Math.round(widgetContentWidth(20) * 0.6);
+  const left = row.addStack();
+  left.layoutVertically();
   const lr = data.lastRace;
-  addText(w, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(fs), C.red);
-  w.addSpacer(4);
-  const col = w.addStack();
+  addText(left, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(10), C.red);
+  left.addSpacer(2);
+  addPodium(left, data, imgs, podiumW);
+  row.addSpacer(8);
+  const col = row.addStack();
   col.layoutVertically();
-  col.spacing = 2;
-  (lr ? lr.results.slice(0, 3) : []).forEach((r) => driverRow(col, r, fs, false));
+  col.spacing = 1;
+  (lr ? lr.results.slice(3, 10) : []).forEach((r) => driverRow(col, r, fs, true));
+  w.addSpacer();
+  nextRaceBlock(w, data, 10, true);
+  footer(w, offline, data.fetchedAt);
+  return w;
+}
+
+function smallWidget(data, imgs, offline) {
+  const w = baseWidget();
+  w.setPadding(8, 8, 8, 8);
+  const lr = data.lastRace;
+  addText(w, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(10), C.red);
+  w.addSpacer(2);
+  addPodium(w, data, imgs, Math.round(Device.screenSize().width * 0.42) - 16);
   w.addSpacer();
   const nr = data.nextRace;
   if (nr) {
-    addText(w, shortRaceName(nr.name), Font.boldSystemFont(fs - 1), C.text);
-    const row = w.addStack();
-    addText(row, fmtDate(nr.start, "d MMM HH:mm"), Font.mediumSystemFont(fs - 2), C.dim);
-    row.addSpacer();
-    addText(row, countdown(nr.start), Font.heavyMonospacedSystemFont(fs - 1), C.text, { scale: false });
+    addText(w, shortRaceName(nr.name), Font.boldSystemFont(10), C.text);
+    const r = w.addStack();
+    addText(r, fmtDate(nr.start, "d MMM HH:mm"), Font.mediumSystemFont(9), C.dim);
+    r.addSpacer();
+    addText(r, countdown(nr.start), Font.heavyMonospacedSystemFont(10), C.text, { scale: false });
   }
   footer(w, offline, data.fetchedAt);
   return w;
@@ -405,10 +594,11 @@ async function main() {
   let widget;
   try {
     const { data, offline } = await getData();
+    const imgs = await loadPodiumImages(data.lastRace);
     widget =
-      family === "small" ? smallWidget(data, offline)
-      : family === "medium" ? mediumWidget(data, offline)
-      : largeWidget(data, offline);
+      family === "small" ? smallWidget(data, imgs, offline)
+      : family === "medium" ? mediumWidget(data, imgs, offline)
+      : largeWidget(data, imgs, offline);
   } catch (e) {
     widget = errorWidget(String(e && e.message ? e.message : e));
   }
