@@ -2,7 +2,8 @@
 
 Widget pour l'écran d'accueil de l'iPhone qui affiche :
 
-- **Un podium illustré** : le vainqueur en grand au centre (photo + nom), sa voiture derrière lui, P2 et P3 de chaque côté, sur des marches aux couleurs des écuries
+- **Un podium illustré** : le vainqueur en grand au centre (photo + nom), sa voiture derrière lui, le logo de son écurie, P2 et P3 de chaque côté, sur des marches aux couleurs des écuries
+- **Un fond aux couleurs de l'écurie du vainqueur** (dégradé assombri pour garder le texte lisible)
 - **Le reste du top 10** (P4 à P10 : position, couleur de l'écurie, pilote, écart)
 - **Le classement constructeurs** (points de chaque écurie)
 - **Le prochain Grand Prix** (nom, date/heure locale, compte à rebours `J-6 4h`, mention Sprint)
@@ -32,8 +33,8 @@ Les données viennent de l'API publique [Jolpica F1](https://github.com/jolpica/
 - Rafraîchissement demandé toutes les 60 min (iOS décide du moment exact).
 - Les dernières données sont mises en cache : sans réseau, le widget affiche le dernier état avec la mention « hors ligne ».
 - En fin de saison, le prochain GP est cherché dans le calendrier de l'année suivante.
-- Photos des pilotes : API [OpenF1](https://openf1.org) (`headshot_url`). Image de la voiture : CDN de formula1.com.
-  Les images sont gardées en cache sur l'iPhone. Si une image est introuvable, le widget dessine à la place une pastille (code pilote) ou un halo aux couleurs de l'écurie.
+- Photos des pilotes : API [OpenF1](https://openf1.org) (`headshot_url`). Image de la voiture et logo de l'écurie : CDN de formula1.com.
+  Les images sont gardées en cache sur l'iPhone. Si une image est introuvable, le widget dessine à la place une pastille (code pilote), un halo aux couleurs de l'écurie ou un badge avec le nom de l'écurie.
 - Toucher le widget ouvre la page des résultats sur formula1.com.
 
 ## Personnalisation
@@ -43,5 +44,7 @@ En haut de `F1Widget.js` :
 - `REFRESH_MINUTES` — fréquence de rafraîchissement
 - `TEAM_COLORS` / `TEAM_SHORT` — couleurs et noms courts des écuries (clé = `constructorId` de l'API)
 - `CAR_IMAGE_OVERRIDES` — URL d'image de voiture à utiliser pour une écurie, ex. `{ mclaren: "https://…/voiture.png" }` (PNG à fond transparent conseillé)
+- `TEAM_LOGO_OVERRIDES` — URL de logo à utiliser pour une écurie (PNG blanc à fond transparent conseillé)
+- `TEAM_BACKGROUND` — `false` pour revenir au fond sombre neutre
 - `CAR_SLUGS` — nom d'écurie utilisé dans les URL d'images de formula1.com
 - `LOCALE` — langue des dates (`fr_FR` par défaut)

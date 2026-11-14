@@ -5,7 +5,8 @@
 /**
  * F1 Podium – widget iPhone pour Scriptable
  * -----------------------------------------
- *  • Podium illustré : P1 en grand au centre (photo + voiture), P2 et P3
+ *  • Podium illustré : P1 en grand au centre (photo + voiture + logo), P2 et P3
+ *  • Fond du widget aux couleurs de l'écurie du vainqueur
  *  • Top 10 de la dernière course
  *  • Classement constructeurs (points de chaque écurie)
  *  • Date du prochain Grand Prix (+ compte à rebours)
@@ -41,6 +42,10 @@ const CAR_SLUGS = {
 };
 // Pour forcer une image de voiture : { mclaren: "https://…/ma-voiture.png" }
 const CAR_IMAGE_OVERRIDES = {};
+// Pour forcer un logo d'écurie : { ferrari: "https://…/logo.png" }
+const TEAM_LOGO_OVERRIDES = {};
+// false = fond sombre neutre au lieu de la couleur de l'écurie P1
+const TEAM_BACKGROUND = true;
 
 // Couleurs des écuries (clé = constructorId de l'API)
 const TEAM_COLORS = {
@@ -82,8 +87,9 @@ const C = {
   bgTop: new Color("#15151E"),
   bgBottom: new Color("#000000"),
   red: new Color("#E10600"),
+  accent: new Color("#FFFFFF", 0.72), // titres de section, lisibles sur tous les fonds
   text: Color.white(),
-  dim: new Color("#9A9AA5"),
+  dim: new Color("#FFFFFF", 0.62),
   gold: new Color("#FFD700"),
   silver: new Color("#C0C0C0"),
   bronze: new Color("#CD7F32"),
@@ -304,14 +310,28 @@ function carUrls(teamId, season) {
     `https://media.formula1.com/image/upload/c_fit,w_800/f_png/q_auto/v1740000000/common/f1/${yr}/${slug}/${yr}${slug}carright.webp`);
 }
 
+function logoUrls(teamId, season) {
+  if (TEAM_LOGO_OVERRIDES[teamId]) return [TEAM_LOGO_OVERRIDES[teamId]];
+  const slug = CAR_SLUGS[teamId];
+  if (!slug) return [];
+  const y = Number(season) || new Date().getFullYear();
+  const base = "https://media.formula1.com/image/upload/c_fit,h_96/f_png/q_auto/v1740000000/common/f1";
+  return [y, y - 1].flatMap((yr) => [
+    `${base}/${yr}/${slug}/${yr}${slug}logowhite.webp`,
+    `${base}/${yr}/${slug}/${yr}${slug}logo.webp`,
+  ]);
+}
+
 async function loadPodiumImages(lastRace) {
   if (!lastRace) return null;
   const top3 = lastRace.results.slice(0, 3);
-  const [car, ...heads] = await Promise.all([
-    loadImage(carUrls(top3[0] && top3[0].teamId, lastRace.season)),
+  const p1Team = top3[0] && top3[0].teamId;
+  const [car, logo, ...heads] = await Promise.all([
+    loadImage(carUrls(p1Team, lastRace.season)),
+    loadImage(logoUrls(p1Team, lastRace.season)),
     ...top3.map((r) => loadImage(headshotUrls(r.headshot))),
   ]);
-  return { car, heads };
+  return { car, logo, heads };
 }
 
 // Dessine le podium : P2 | P1 (grand, voiture derrière) | P3
@@ -389,6 +409,28 @@ function drawPodium(results, imgs) {
     ctx.setTextColor(new Color("#15151E"));
     ctx.drawTextInRect(s.r.pos, new Rect(mx, my + m * 0.14, m, m * 0.8));
   }
+  // 5) Logo de l'écurie du vainqueur (en haut à droite, au-dessus du P3)
+  if (p1.r) {
+    const logo = imgs && imgs.logo;
+    const boxW = 84, boxH = 26, bx = W - boxW - 2, by = 2;
+    if (logo) {
+      let lw = boxW, lh = (lw * logo.size.height) / logo.size.width;
+      if (lh > boxH) { lh = boxH; lw = (lh * logo.size.width) / logo.size.height; }
+      ctx.drawImageInRect(logo, new Rect(bx + (boxW - lw) / 2, by + (boxH - lh) / 2, lw, lh));
+    } else {
+      // Repli : badge texte avec le nom de l'écurie
+      const label = (TEAM_SHORT[p1.r.teamId] || p1.r.teamId).toUpperCase();
+      ctx.setFillColor(new Color("#000000", 0.35));
+      ctx.fillRect(new Rect(bx, by + 3, boxW, boxH - 6));
+      ctx.setFillColor(new Color(TEAM_COLORS[p1.r.teamId] || "#888888"));
+      ctx.fillRect(new Rect(bx, by + 3, 3, boxH - 6));
+      const lfs = Math.min(10, (boxW - 10) / (label.length * 0.68));
+      ctx.setFont(Font.heavySystemFont(lfs));
+      ctx.setTextColor(Color.white());
+      ctx.setTextAlignedCenter();
+      ctx.drawTextInRect(label, new Rect(bx + 3, by + (boxH - lfs * 1.25) / 2, boxW - 3, lfs * 1.3));
+    }
+  }
   return ctx.getImage();
 }
 
@@ -422,7 +464,7 @@ function header(w, data, fs) {
 }
 
 function sectionTitle(stack, title, fs) {
-  addText(stack, title.toUpperCase(), Font.heavySystemFont(fs - 3), C.red, { scale: false });
+  addText(stack, title.toUpperCase(), Font.heavySystemFont(fs - 3), C.accent, { scale: false });
   stack.addSpacer(3);
 }
 
@@ -468,7 +510,7 @@ function nextRaceBlock(w, data, fs, compact) {
     addText(box, "Prochain GP : calendrier indisponible", Font.mediumSystemFont(fs - 1), C.dim);
     return;
   }
-  addText(box, compact ? "NEXT" : "PROCHAIN GP", Font.heavySystemFont(fs - 3), C.red, { scale: false });
+  addText(box, compact ? "NEXT" : "PROCHAIN GP", Font.heavySystemFont(fs - 3), C.accent, { scale: false });
   box.addSpacer(6);
   addText(box, shortRaceName(nr.name) + (nr.sprint && !compact ? " · Sprint" : ""), Font.boldSystemFont(fs), C.text);
   box.addSpacer(6);
@@ -487,11 +529,25 @@ function footer(w, offline, fetchedAt) {
 
 // ---------------------------------------------------------------- widgets
 
-function baseWidget() {
+// Assombrit une couleur hex (factor 0..1) pour garder le texte blanc lisible
+function shade(hex, factor) {
+  const n = parseInt(hex.replace("#", ""), 16);
+  const ch = (v) => Math.round(v * factor).toString(16).padStart(2, "0");
+  return "#" + ch((n >> 16) & 255) + ch((n >> 8) & 255) + ch(n & 255);
+}
+
+function baseWidget(data) {
   const w = new ListWidget();
   const g = new LinearGradient();
-  g.colors = [C.bgTop, C.bgBottom];
-  g.locations = [0, 1];
+  const p1 = data && data.lastRace && data.lastRace.results[0];
+  const team = p1 && TEAM_COLORS[p1.teamId];
+  if (TEAM_BACKGROUND && team) {
+    g.colors = [new Color(shade(team, 0.62)), new Color(shade(team, 0.28)), new Color("#050507")];
+    g.locations = [0, 0.5, 1];
+  } else {
+    g.colors = [C.bgTop, C.bgBottom];
+    g.locations = [0, 1];
+  }
   w.backgroundGradient = g;
   w.url = "https://www.formula1.com/en/results";
   w.refreshAfterDate = new Date(Date.now() + REFRESH_MINUTES * 60000);
@@ -499,7 +555,7 @@ function baseWidget() {
 }
 
 function largeWidget(data, imgs, offline) {
-  const w = baseWidget();
+  const w = baseWidget(data);
   const pad = 12;
   w.setPadding(10, pad, 10, pad);
   const fs = 10.5;
@@ -533,7 +589,7 @@ function largeWidget(data, imgs, offline) {
 }
 
 function mediumWidget(data, imgs, offline) {
-  const w = baseWidget();
+  const w = baseWidget(data);
   w.setPadding(8, 10, 8, 10);
   const fs = 9;
   const row = w.addStack();
@@ -542,7 +598,7 @@ function mediumWidget(data, imgs, offline) {
   const left = row.addStack();
   left.layoutVertically();
   const lr = data.lastRace;
-  addText(left, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(10), C.red);
+  addText(left, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(10), C.text);
   left.addSpacer(2);
   addPodium(left, data, imgs, podiumW);
   row.addSpacer(8);
@@ -557,10 +613,10 @@ function mediumWidget(data, imgs, offline) {
 }
 
 function smallWidget(data, imgs, offline) {
-  const w = baseWidget();
+  const w = baseWidget(data);
   w.setPadding(8, 8, 8, 8);
   const lr = data.lastRace;
-  addText(w, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(10), C.red);
+  addText(w, lr ? shortRaceName(lr.name) : "F1", Font.heavySystemFont(10), C.text);
   w.addSpacer(2);
   addPodium(w, data, imgs, Math.round(Device.screenSize().width * 0.42) - 16);
   w.addSpacer();
